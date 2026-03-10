@@ -1,0 +1,24 @@
+# test_api.py
+import requests
+
+API_URL = "http://127.0.0.1:8000"
+city = "Nairobi"
+
+# Test different patterns
+endpoints = [
+    f"{API_URL}/forecast/lstm/{city}",
+    f"{API_URL}/forecast/{city}?model_type=lstm",
+    f"{API_URL}/forecast/{city}/lstm",
+    f"{API_URL}/predict/{city}?model=lstm"
+]
+
+for url in endpoints:
+    try:
+        response = requests.get(url)
+        print(f"{url}: {response.status_code}")
+        if response.status_code == 200:
+            print("✅ Works!")
+            print(response.json())
+            break
+    except:
+        print(f"{url}: Failed")
