@@ -8,3 +8,6 @@ statsmodels
 prophet
 scipy
 pillow
+onnx
+onnxruntime
+keras2onnx
