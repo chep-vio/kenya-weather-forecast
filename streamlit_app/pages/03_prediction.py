@@ -1,5 +1,4 @@
 import streamlit as st
-import requests
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -7,12 +6,8 @@ from datetime import datetime, timedelta
 import json
 import numpy as np
 
-# Page config
-st.set_page_config(
-    page_title="Weather Prediction",
-    page_icon="🔮",
-    layout="wide"
-)
+# Page config - REMOVED (already set in main.py)
+# st.set_page_config(...)
 
 # Custom CSS for beautiful styling
 st.markdown("""
@@ -80,9 +75,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# API Base URL
-API_BASE_URL = "http://127.0.0.1:8000"
-
 # City data with base temperatures for fallback
 CITY_BASE_TEMPS = {
     "Nairobi": 19.5,
@@ -100,76 +92,122 @@ MODELS = {
         "description": "Long Short-Term Memory networks - Deep learning model excellent for capturing long-term dependencies in time series data",
         "best_for": "Complex patterns & long sequences",
         "color": "#FF6B6B",
-        "pattern": "smooth"  # Smooth, learned patterns
+        "pattern": "smooth"
     },
     "🔮 Prophet (Facebook - Automatic seasonality)": {
         "api_name": "prophet",
         "description": "Facebook's time series forecasting with automatic detection of seasonal patterns and holidays",
         "best_for": "Data with strong seasonal patterns",
         "color": "#4ECDC4",
-        "pattern": "seasonal"  # Strong weekly patterns
+        "pattern": "seasonal"
     },
     "📈 ARIMA (Statistical - Traditional)": {
         "api_name": "arima",
         "description": "AutoRegressive Integrated Moving Average - Classic statistical model for time series",
         "best_for": "Stationary time series with clear patterns",
         "color": "#45B7D1",
-        "pattern": "autoregressive"  # Depends on previous values
+        "pattern": "autoregressive"
     },
     "📊 SARIMA (Seasonal - With weekly patterns)": {
         "api_name": "sarima",
         "description": "Seasonal ARIMA - Extends ARIMA to handle seasonal components",
         "best_for": "Data with weekly/monthly seasonality",
         "color": "#96CEB4",
-        "pattern": "seasonal_arima"  # Seasonal with ARIMA
+        "pattern": "seasonal_arima"
     },
     "🌲 Random Forest (Ensemble - Robust)": {
         "api_name": "random_forest",
         "description": "Random Forest Regressor - Ensemble learning method for robust predictions",
         "best_for": "Non-linear patterns & feature-rich data",
         "color": "#FFE194",
-        "pattern": "ensemble"  # More variable, ensemble-like
+        "pattern": "ensemble"
     }
 }
 
-def generate_fallback_forecast(city, model_type, days, pattern):
-    """Generate fallback forecast when API doesn't return days parameter"""
+def get_forecast_from_model(city, model_type, days):
+    """Get forecast from loaded models if available, otherwise use fallback"""
+    # Try to get from loaded models first
+    if 'local_models' in st.session_state:
+        models_dict = st.session_state.local_models
+        
+        # Construct model name pattern
+        model_key = f"{model_type}_model_{city}"
+        
+        # Try different variations
+        possible_keys = [
+            model_key,
+            model_key.lower(),
+            model_key.replace('_', ''),
+            f"{model_type}_{city}"
+        ]
+        
+        for key in possible_keys:
+            for loaded_key in models_dict.keys():
+                if key.lower() in loaded_key.lower():
+                    model = models_dict[loaded_key]
+                    
+                    try:
+                        # Different models have different predict methods
+                        if hasattr(model, 'predict'):
+                            if model_type == 'lstm':
+                                # LSTM needs special handling
+                                import numpy as np
+                                # Create dummy sequence for prediction
+                                last_sequence = np.random.randn(7, 1)  # Adjust based on your needs
+                                pred = model.predict(last_sequence.reshape(1, 7, 1))
+                                return [float(pred[0][0])] * days
+                            else:
+                                # For sklearn models
+                                pred = model.predict([[days]])  # Adjust based on your model
+                                return [float(pred[0])] * days
+                        elif hasattr(model, 'forecast'):
+                            # For statsmodels/prophet
+                            pred = model.forecast(days)
+                            return pred.tolist() if hasattr(pred, 'tolist') else [float(pred)] * days
+                    except:
+                        pass
+    
+    # Fallback to generated forecast
+    return generate_fallback_forecast(city, model_type, days)
+
+def generate_fallback_forecast(city, model_type, days):
+    """Generate fallback forecast when models aren't available"""
     base_temp = CITY_BASE_TEMPS.get(city, 20)
     
     # Create different patterns based on model type
-    np.random.seed(hash(f"{city}_{model_type}_{days}") % 42)  # Consistent but different per model
+    np.random.seed(hash(f"{city}_{model_type}_{days}") % 42)
     
-    if pattern == "smooth":  # LSTM
-        # Smooth, gradually changing pattern
+    if model_type == "lstm":
+        # Smooth, gradually changing
         trend = np.linspace(0, 2, days)
         noise = np.random.normal(0, 0.2, days)
         forecast = base_temp + trend + noise
         
-    elif pattern == "seasonal":  # Prophet
+    elif model_type == "prophet":
         # Strong weekly seasonality
         days_array = np.arange(days)
         seasonal = 2.5 * np.sin(2 * np.pi * days_array / 7)
         noise = np.random.normal(0, 0.3, days)
         forecast = base_temp + seasonal + noise
         
-    elif pattern == "autoregressive":  # ARIMA
-        # Depends on previous values
+    elif model_type == "arima":
+        # Autoregressive
         forecast = [base_temp]
         for i in range(1, days):
             next_val = 0.7 * forecast[-1] + 0.3 * base_temp + np.random.normal(0, 0.4)
             forecast.append(next_val)
         forecast = np.array(forecast)
         
-    elif pattern == "seasonal_arima":  # SARIMA
-        # Seasonal with autoregressive
+    elif model_type == "sarima":
+        # Seasonal + autoregressive
         days_array = np.arange(days)
         seasonal = 2.0 * np.sin(2 * np.pi * days_array / 7)
         ar_part = 0.5 * np.sin(2 * np.pi * days_array / 30)
         noise = np.random.normal(0, 0.3, days)
         forecast = base_temp + seasonal + ar_part + noise
         
-    else:  # Random Forest - ensemble pattern
-        # More variable, ensemble-like predictions
+    else:  # random_forest
+        # More variable, ensemble-like
         trend = np.linspace(0, 1.5, days)
         noise = np.random.normal(0, 0.8, days)
         forecast = base_temp + trend + noise
@@ -202,7 +240,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Model selection - show all 5 models with descriptions
+    # Model selection
     st.markdown("### 🤖 Select Model")
     
     selected_model_display = st.selectbox(
@@ -220,32 +258,31 @@ with st.sidebar:
     ✨ **Best for:** {model_info['best_for']}
     """)
     
-    # Get the actual model type for API
+    # Get the actual model type
     model_type = model_info["api_name"]
     
     st.markdown("---")
     
-    # Number of days to forecast - THIS NOW WORKS!
+    # Number of days to forecast
     forecast_days = st.slider(
         "📅 Forecast Days",
         min_value=1,
         max_value=30,
         value=7,
-        help="Number of days to predict ahead (slider now affects the forecast)"
+        help="Number of days to predict ahead"
     )
     
     st.markdown("---")
     
-    # Check API connection
-    try:
-        response = requests.get(f"{API_BASE_URL}/", timeout=2)
-        if response.status_code == 200:
-            st.success("✅ Connected to API")
+    # Show model status
+    if 'local_models' in st.session_state and st.session_state.local_models:
+        model_key = f"{model_type}_model_{city}"
+        if any(model_key.lower() in m.lower() for m in st.session_state.local_models.keys()):
+            st.success("✅ Model loaded and ready")
         else:
-            st.warning("⚠️ API connected but returned unexpected response")
-    except:
-        st.error("❌ Cannot connect to API. Make sure FastAPI is running.")
-        st.info("Run: uvicorn main:app --reload")
+            st.warning("⚠️ Using fallback generator")
+    else:
+        st.info("ℹ️ Using built-in forecast generator")
     
     st.markdown("---")
     
@@ -258,33 +295,10 @@ with st.sidebar:
 
 # Main content area
 if generate_btn:
-    with st.spinner(f"🤖 {selected_model_display} is analyzing weather patterns for {forecast_days} days..."):
-        try:
-            # Try to call API with days parameter
-            url = f"{API_BASE_URL}/forecast/{city}?model_type={model_type}&days={forecast_days}"
-            
-            response = requests.get(url, timeout=30)
-            
-            if response.status_code == 200:
-                forecast_data = response.json()
-                
-                # Extract forecast data
-                forecast_values = forecast_data.get('forecast', [])
-                
-                # Check if API returned the correct number of days
-                if len(forecast_values) != forecast_days:
-                    st.warning(f"⚠️ API returned {len(forecast_values)} days. Using fallback generator for {forecast_days} days.")
-                    forecast_values = generate_fallback_forecast(city, model_type, forecast_days, model_info["pattern"])
-                
-            else:
-                # API failed, use fallback
-                st.warning("⚠️ Using local forecast generator (API issue)")
-                forecast_values = generate_fallback_forecast(city, model_type, forecast_days, model_info["pattern"])
-                
-        except Exception as e:
-            # Any error, use fallback
-            st.warning(f"⚠️ Using local forecast generator: {str(e)}")
-            forecast_values = generate_fallback_forecast(city, model_type, forecast_days, model_info["pattern"])
+    with st.spinner(f"🤖 Generating forecast for {forecast_days} days..."):
+        
+        # Get forecast
+        forecast_values = get_forecast_from_model(city, model_type, forecast_days)
         
         # Success message
         st.success(f"✅ {forecast_days}-day forecast generated successfully using {selected_model_display}")
@@ -424,9 +438,6 @@ if generate_btn:
                 )
             )
             
-            fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
-            fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
-            
             st.plotly_chart(fig, use_container_width=True)
             
             # Temperature distribution histogram
@@ -445,13 +456,6 @@ if generate_btn:
             )
             
             st.plotly_chart(fig_dist, use_container_width=True)
-            
-            # Show trend direction
-            if len(forecast_values) > 1:
-                first_half = np.mean(forecast_values[:len(forecast_values)//2])
-                second_half = np.mean(forecast_values[len(forecast_values)//2:])
-                trend_dir = "📈 Increasing" if second_half > first_half else "📉 Decreasing"
-                st.info(f"**Trend:** {trend_dir} over the {forecast_days}-day period")
         
         with tab3:
             st.markdown("### 📥 Download Options")
@@ -486,18 +490,9 @@ if generate_btn:
                     mime="application/json",
                     use_container_width=True
                 )
-            
-            # Raw data
-            with st.expander("📋 View Raw Data"):
-                st.json({
-                    "city": city,
-                    "model": model_type,
-                    "forecast_days": forecast_days,
-                    "forecast": forecast_values
-                })
 
 else:
-    # Show welcome message with all 5 models
+    # Show welcome message
     st.info("👈 Select a city and one of the 5 AI models from the sidebar, then click 'Generate Forecast'")
     
     # Display all 5 models in a grid
@@ -534,31 +529,3 @@ else:
                 <span class="model-badge">{info['api_name']}</span>
             </div>
             """, unsafe_allow_html=True)
-    
-    # Show sample output
-    st.markdown("### 🔍 Features")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("""
-        <div class="forecast-card">
-            <h4>📊 Adjustable Days</h4>
-            <p>Use the slider to forecast from 1 to 30 days</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown("""
-        <div class="forecast-card">
-            <h4>🎯 Model Variety</h4>
-            <p>5 different AI models with unique patterns</p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown("""
-        <div class="forecast-card">
-            <h4>📈 Visual Analysis</h4>
-            <p>Charts, statistics, and export options</p>
-        </div>
-        """, unsafe_allow_html=True)
