@@ -1,12 +1,19 @@
 import streamlit as st
+import requests
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+import json
 
-# Page config - REMOVED (already set in main.py)
-# st.set_page_config(...)
+# Page config
+st.set_page_config(
+    page_title="Model Comparison",
+    page_icon="📊",
+    layout="wide"
+)
 
 # Custom CSS
 st.markdown("""
@@ -43,8 +50,27 @@ st.markdown("""
         margin: 0.2rem;
         color: white;
     }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 4px 4px 0px 0px;
+        padding: 10px 20px;
+        background-color: #f0f2f6;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #1E88E5;
+        color: white;
+    }
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(-20px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
 </style>
 """, unsafe_allow_html=True)
+
+# API Base URL
+API_BASE_URL = "http://127.0.0.1:8000"
 
 # City data
 CITIES = ["Nairobi", "Kisumu", "Nakuru", "Mombasa"]
@@ -96,17 +122,20 @@ def generate_model_forecast(city, model_name, days=7):
     np.random.seed(hash(f"{city}_{model_name}_{days}") % 42)
     
     if model_name == "LSTM":
+        # Smooth, gradually changing
         trend = np.linspace(0, 2, days)
         noise = np.random.normal(0, 0.2, days)
         forecast = base_temp + trend + noise
         
     elif model_name == "Prophet":
+        # Strong weekly seasonality
         days_array = np.arange(days)
         seasonal = 2.5 * np.sin(2 * np.pi * days_array / 7)
         noise = np.random.normal(0, 0.3, days)
         forecast = base_temp + seasonal + noise
         
     elif model_name == "ARIMA":
+        # Autoregressive
         forecast = [base_temp]
         for i in range(1, days):
             next_val = 0.7 * forecast[-1] + 0.3 * base_temp + np.random.normal(0, 0.4)
@@ -114,6 +143,7 @@ def generate_model_forecast(city, model_name, days=7):
         forecast = np.array(forecast)
         
     elif model_name == "SARIMA":
+        # Seasonal + autoregressive
         days_array = np.arange(days)
         seasonal = 2.0 * np.sin(2 * np.pi * days_array / 7)
         ar_part = 0.5 * np.sin(2 * np.pi * days_array / 30)
@@ -121,6 +151,7 @@ def generate_model_forecast(city, model_name, days=7):
         forecast = base_temp + seasonal + ar_part + noise
         
     else:  # Random Forest
+        # More variable, ensemble-like
         trend = np.linspace(0, 1.5, days)
         noise = np.random.normal(0, 0.8, days)
         forecast = base_temp + trend + noise
@@ -176,14 +207,6 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Show model status
-    if 'local_models' in st.session_state and st.session_state.local_models:
-        st.success(f"✅ {len(st.session_state.local_models)} models available")
-    else:
-        st.info("ℹ️ Using built-in forecast generator")
-    
-    st.markdown("---")
-    
     # Compare button
     compare_btn = st.button("📊 Compare Models", type="primary", use_container_width=True)
 
@@ -208,6 +231,7 @@ if compare_btn and selected_models:
         # Create comparison chart
         fig = go.Figure()
         
+        # Add each model's forecast
         for model_name in selected_models:
             fig.add_trace(go.Scatter(
                 x=[f"Day {i+1}" for i in range(days)],
@@ -239,12 +263,14 @@ if compare_btn and selected_models:
         if len(selected_models) > 1:
             st.markdown("### 📊 Model Agreement Analysis")
             
+            # Calculate mean and std across models
             all_forecasts = np.array([forecasts[m] for m in selected_models])
             mean_forecast = np.mean(all_forecasts, axis=0)
             std_forecast = np.std(all_forecasts, axis=0)
             
             fig_agreement = go.Figure()
             
+            # Add confidence band
             fig_agreement.add_trace(go.Scatter(
                 x=[f"Day {i+1}" for i in range(days)],
                 y=mean_forecast + std_forecast,
@@ -265,6 +291,7 @@ if compare_btn and selected_models:
                 showlegend=False
             ))
             
+            # Add mean line
             fig_agreement.add_trace(go.Scatter(
                 x=[f"Day {i+1}" for i in range(days)],
                 y=mean_forecast,
@@ -283,6 +310,18 @@ if compare_btn and selected_models:
             )
             
             st.plotly_chart(fig_agreement, use_container_width=True)
+            
+            # Agreement metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                avg_uncertainty = np.mean(std_forecast)
+                st.metric("Average Uncertainty", f"±{avg_uncertainty:.2f}°C")
+            with col2:
+                max_uncertainty = np.max(std_forecast)
+                st.metric("Max Uncertainty", f"±{max_uncertainty:.2f}°C")
+            with col3:
+                agreement_score = 100 * (1 - avg_uncertainty / np.mean(mean_forecast))
+                st.metric("Model Agreement", f"{agreement_score:.1f}%")
     
     with tab2:
         st.markdown("### 📊 Model Metrics Comparison")
@@ -304,6 +343,35 @@ if compare_btn and selected_models:
         
         metrics_df = pd.DataFrame(metrics_data)
         st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+        
+        # Radar chart for model comparison
+        st.markdown("### 🎯 Model Characteristics Radar")
+        
+        fig_radar = go.Figure()
+        
+        for model_name in selected_models:
+            m = metrics[model_name]
+            fig_radar.add_trace(go.Scatterpolar(
+                r=[m['Mean']/30*100, 100-m['Volatility'], m['Range']/10*100, 
+                   100-abs(m['Mean']-20)/20*100, m['Std Dev']*10],
+                theta=['Temperature', 'Stability', 'Range', 'Accuracy', 'Variability'],
+                fill='toself',
+                name=model_name,
+                line=dict(color=MODELS[model_name]['color'])
+            ))
+        
+        fig_radar.update_layout(
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, 100]
+                )),
+            showlegend=True,
+            title='Model Performance Radar',
+            height=500
+        )
+        
+        st.plotly_chart(fig_radar, use_container_width=True)
     
     with tab3:
         st.markdown("### 📉 Statistical Analysis")
@@ -335,6 +403,7 @@ if compare_btn and selected_models:
         if len(selected_models) > 1:
             st.markdown("### 🔗 Model Correlation Matrix")
             
+            # Create correlation matrix
             corr_data = []
             for m1 in selected_models:
                 row = []
@@ -364,9 +433,10 @@ if compare_btn and selected_models:
         for model_name in selected_models:
             m = metrics[model_name]
             
-            stability_score = 100 - m['Volatility']
-            accuracy_score = 100 - abs(m['Mean'] - 20) * 5
-            range_score = m['Range'] * 3
+            # Calculate scores (lower is better for some metrics)
+            stability_score = 100 - m['Volatility']  # Higher stability is better
+            accuracy_score = 100 - abs(m['Mean'] - 20) * 5  # Closer to 20°C is better
+            range_score = m['Range'] * 3  # Higher range is better for variability
             
             total_score = (stability_score + accuracy_score + range_score) / 3
             
@@ -393,9 +463,85 @@ if compare_btn and selected_models:
                     <h3>{medal} #{row['Rank']}</h3>
                     <h4>{row['Model']}</h4>
                     <p>Total Score: {row['Total Score']}</p>
+                    <p>Stability: {row['Stability Score']}</p>
+                    <p>Accuracy: {row['Accuracy Score']}</p>
                 </div>
                 """, unsafe_allow_html=True)
+        
+        # Winner analysis
+        winner = rankings_df.iloc[0]
+        st.markdown(f"""
+        <div class="winner-card">
+            <h3>🏆 Best Model: {winner['Model']}</h3>
+            <p><strong>Strengths:</strong> {MODELS[winner['Model']]['strengths']}</p>
+            <p><strong>Score:</strong> {winner['Total Score']} points</p>
+            <p><strong>Why it won:</strong> Best balance of stability, accuracy, and range</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Recommendation
+        st.markdown("### 💡 Recommendations")
+        
+        if winner['Model'] == "LSTM":
+            st.info("✅ **LSTM recommended for:** Complex patterns, long-term dependencies")
+        elif winner['Model'] == "Prophet":
+            st.info("✅ **Prophet recommended for:** Strong seasonal patterns, business forecasting")
+        elif winner['Model'] == "ARIMA":
+            st.info("✅ **ARIMA recommended for:** Clear trends, interpretable results")
+        elif winner['Model'] == "SARIMA":
+            st.info("✅ **SARIMA recommended for:** Weekly/monthly patterns, seasonal data")
+        else:
+            st.info("✅ **Random Forest recommended for:** Non-linear patterns, robust predictions")
 
 else:
     # Show instructions
     st.info("👈 Select models from the sidebar and click 'Compare Models'")
+    
+    # Model summary cards
+    st.markdown("### 📋 Model Overview")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    model_items = list(MODELS.items())
+    
+    for i, (name, info) in enumerate(model_items):
+        with [col1, col2, col3][i % 3]:
+            st.markdown(f"""
+            <div class="metric-card" style="border-bottom-color: {info['color']}">
+                <h4>{name}</h4>
+                <p><small>{info['description']}</small></p>
+                <p><strong>✓</strong> {info['strengths']}</p>
+                <p><strong>⚠️</strong> {info['weaknesses']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # Comparison features
+    st.markdown("### ✨ Comparison Features")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        <div class="metric-card">
+            <h4>📈 Visual Comparison</h4>
+            <p>Line charts comparing all selected models</p>
+            <p>Model agreement analysis</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="metric-card">
+            <h4>📊 Metrics Dashboard</h4>
+            <p>Mean, median, std dev, range</p>
+            <p>Radar charts for model characteristics</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div class="metric-card">
+            <h4>🏆 Model Rankings</h4>
+            <p>Score-based ranking system</p>
+            <p>Winner analysis & recommendations</p>
+        </div>
+        """, unsafe_allow_html=True)
